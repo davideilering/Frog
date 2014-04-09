@@ -24,6 +24,8 @@ import json
 import Queue
 import subprocess
 import re
+import logging
+logger = logging.getLogger('frog')
 
 from django.db import models
 from django.contrib.auth.models import User
@@ -283,29 +285,30 @@ class Video(Piece):
         tags = tags or []
 
         ## -- Get info
-        cmd = '%s -i "%s"' % (settings.FFMPEG, hashPath)
+        cmd = '%s -v quiet -show_format -show_streams -print_format json "%s"' % (settings.FROG_FFPROBE, hashPath)
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True)
-        infoString = proc.stdout.readlines()
+        infoString = proc.stdout.read()
         videodata = parseInfo(infoString)
         
-        self.width = int(videodata['video'][0]['width'])
-        self.height = int(videodata['video'][0]['height'])
+        self.width = int(videodata['video']['width'])
+        self.height = int(videodata['video']['height'])
 
         ## -- Save thumbnail and put into queue
         thumbnail = hashPath.parent / ("_%s.jpg" % hashVal)
-        cmd = '%s -i "%s" -ss 1 -vframes 1 "%s"' % (
-            settings.FFMPEG,
+        cmd = '%s -nostdin -i "%s" -ss 1 -vframes 1 "%s"' % (
+            settings.FROG_FFMPEG,
             hashPath,
             thumbnail
         )
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True)
-        proc.communicate()
+        thumbnailoutput = proc.communicate()
 
         self.thumbnail = thumbnail.replace('\\', '/').replace(ROOT, '')
 
         for gal in galleries:
             g = Gallery.objects.get(pk=int(gal))
             g.videos.add(self)
+
 
         artistTag = Tag.objects.get_or_create(name=self.author.first_name + ' ' + self.author.last_name)[0]
         self.tags.add(artistTag)
@@ -325,6 +328,7 @@ class Video(Piece):
         self.save()
 
         gQueue.put(self)
+
 
     def json(self):
         obj = super(Video, self).json()

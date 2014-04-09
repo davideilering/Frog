@@ -24,6 +24,7 @@ import logging
 import re
 import time
 import subprocess
+import json
 from threading import Thread
 
 from django.conf import settings
@@ -59,7 +60,6 @@ class VideoThread(Thread):
                     ## -- Get the video object to work on
                     item = self.queue.get()
                     ## -- Set the video to processing
-                    logger.info('Processing video: %s' % item.guid)
                     item.video = 'frog/i/processing.mp4'
                     item.save()
                     ## -- Set the status of the queue item
@@ -67,18 +67,16 @@ class VideoThread(Thread):
                     item.queue.setMessage('Processing video...')
                     
                     infile = "%s%s" % (ROOT, item.source.name)
-                    cmd = '%s -i "%s"' % (FROG_FFMPEG, infile)
+                    cmd = '%s -v quiet -show_format -show_streams -print_format json "%s"' % (settings.FROG_FFPROBE, infile)
                     sourcepath = ROOT / item.source.name
 
                     ## -- Get the video information
                     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True)
-                    infoString = proc.stdout.readlines()
+                    infoString = proc.stdout.read()
                     videodata = parseInfo(infoString)
-                    isH264 = videodata['video'][0]['codec'].lower().find('h264') != -1 and sourcepath.ext == '.mp4'
-                    m, s = divmod(FROG_SCRUB_DURATION, 60)
-                    h, m = divmod(m, 60)
-                    scrubstr = "%02d:%02d:%02d" % (h, m, s)
-                    scrub = videodata['duration'] <= scrubstr
+                    isH264 = videodata['video']['codec'].lower().find('h264') != -1 and sourcepath.ext == '.mp4'
+
+                    scrub = float(videodata['duration']) <= FROG_SCRUB_DURATION
 
                     outfile = sourcepath.parent / ("_%s.mp4" % item.hash)
 
@@ -86,7 +84,7 @@ class VideoThread(Thread):
                     if not isH264 or scrub:
                         item.queue.setMessage('Converting to MP4...')
                         
-                        cmd = '{exe} -i "{infile}" {args} "{outfile}"'.format(
+                        cmd = '{exe} -nostdin -i "{infile}" {args} "{outfile}"'.format(
                             exe=FROG_FFMPEG,
                             infile=infile,
                             args=FROG_SCRUB_FFMPEG_ARGS if scrub else FROG_FFMPEG_ARGS,
@@ -98,41 +96,33 @@ class VideoThread(Thread):
                             logger.error('Failed to convert video: %s' % item.guid)
                             item.queue.setStatus(item.queue.ERROR)
                             continue
-                        
+
                         item.video = outfile.replace('\\', '/').replace(ROOT, '')
                     else:
                         ## -- No further processing
                         item.video = item.source.name
 
+
                     ## -- Set the video to the result
                     logger.info('Finished processing video: %s' % item.guid)
                     item.queue.setStatus(item.queue.COMPLETED)
+                    item.queue.setMessage('Completed')
+
                     item.save()
                 except Exception, e:
                     logger.error(str(e))
 
                 time.sleep(TIMEOUT)
 
-
-def parseInfo(strings):
+def parseInfo(jsonString):
+    rawJson = json.loads(jsonString)
     data = {}
-    stream_video = re.compile("""Stream #\d[:.](?P<index>\d+).*: (?P<type>\w+): (?P<codec>.*), (?P<pixel_format>\w+), (?P<width>\d+)x(?P<height>\d+)""")
-    stream_audio = re.compile("""Stream #\d[:.](?P<index>\d+).*: (?P<type>\w+): (?P<codec>.*), (?P<hertz>\d+) Hz, .*, .*, (?P<bitrate>\d+) kb/s$""")
-    duration = re.compile("""Duration: (?P<duration>\d+:\d+:\d+.\d+), start: (?P<start>\d+.\d+), bitrate: (?P<bitrate>\d+) kb/s$""")
-
-    for n in strings:
-        n = n.strip()
-        if n.startswith('Duration'):
-            r = duration.search(n)
-            data.update(r.groupdict())
-        elif n.startswith('Stream'):
-            if n.find('Video') != -1:
-                data.setdefault('video', [])
-                r = stream_video.search(n)
-                data['video'].append(r.groupdict())
-            elif n.find('Audio') != -1:
-                data.setdefault('audio', [])
-                r = stream_audio.search(n)
-                data['audio'].append(r.groupdict())
-
+    data['duration'] = rawJson['format']['duration']
+    streams = rawJson['streams']
+    for stream in streams:
+        try:
+            if(stream['codec_type'] == 'video'):
+                data['video'] = {'width': stream['width'], 'height': stream['height'], 'codec': stream['codec_name']}
+        except: 
+            logger.error('error parsing json ' + stream)
     return data
