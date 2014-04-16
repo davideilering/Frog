@@ -41,6 +41,8 @@ from django.template.loader import render_to_string
 from frog.common import Result, JsonResponse, commentToJson, getObjectsFromGuids, getPutData
 from frog.models import FROG_SITE_URL
 
+import logging
+logger = logging.getLogger('frog')
 
 def index(request, obj_id):
     """Handles a request based on method and calls the appropriate function"""
@@ -150,9 +152,11 @@ def __email(comment, obj):
         'object': obj,
         'SITE_URL': FROG_SITE_URL,
     })
-    subject, from_email, to = 'Comment from %s' % comment.user_name, '%s (%s)' % (comment.user_name, comment.user_email), obj.author.email
+    subject, from_email, to = 'Comment from %s' % comment.user_name, comment.user_email, obj.author.email
     text_content = 'This is an important message.'
     html_content = html
     msg = EmailMultiAlternatives(subject, text_content, from_email, [to])
     msg.attach_alternative(html_content, "text/html")
+    logger.debug('__email: about to send... subject=' + subject + ', from_email=' + from_email + ', to=' + to)
     msg.send()
+    
